@@ -1,0 +1,4 @@
+.ipynb_checkpoints/RAG_Eval-checkpoint.ipynb
+
+*.pyc
+.env
