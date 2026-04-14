@@ -1,52 +1,55 @@
-import json
-import re
 from typing import List, Dict
-from LLM import LLMClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+from LLM import LLMClient 
 
-class SocialInstructionSGR(BaseModel):
+
+class SocialInstructionSGR(BaseModel):    
+    model_config = ConfigDict(extra='forbid') 
+
     extracted_entities: List[str] = Field(
-        description="Список всех найденных в контексте дат, сроков, сумм, процентов и названий организаций."
+        ...,
+        description="Список всех найденных в контексте дат, сроков, сумм, процентов и названий организаций/ведомств. "
+                    "Только точные факты из текста. Если ничего нет — пустой список []."
     )
+    
     analysis: str = Field(
-        description="Глубокий анализ прав и условий на основе извлеченных фактов."
+        ...,
+        description="Глубокий анализ права гражданина на услугу. "
+                    "Обоснуй на основе нормативной базы и критериев из контекста."
     )
+    
     steps: List[str] = Field(
-        description="Пошаговый алгоритм действий гражданина (с указанием конкретных ведомств и сроков)."
+        ...,
+        description="Пошаговый алгоритм действий. Каждый шаг должен содержать: "
+                    "Куда обратиться (название организации) → Какие документы → Срок → Ожидаемый результат."
     )
+    
     final_regulation: str = Field(
-        description="Итоговый официальный текст инструкции."
+        ...,
+        description="Итоговый официальный, лаконичный и готовый к выдаче текст инструкции для гражданина. "
+                    "Стиль — деловой, без лишних слов."
     )
+
 
 class GenerationModule:
     def __init__(self, client: LLMClient):
         self.llm = client
 
     def generate_instruction(self, query: str, context_chunks: List[Dict]) -> SocialInstructionSGR:
-        context_text = "\n\n".join([chunk['text'] for chunk in context_chunks])
+        context_text = "\n\n".join(chunk['text'] for chunk in context_chunks)
 
         system_prompt = (
-            "Ты — эксперт-аналитик по социальным вопросам. Твоя задача — составить инструкцию на основе предоставленного текста.\n\n"
-            "ПРАВИЛА РАБОТЫ:\n"
-            "1. Используй ТОЛЬКО информацию из КАНТЕКСТА. Если данных нет, пиши 'не указано'.\n"
-            "2. extracted_entities: Строгий список ключевых фактов (названия ГКУ/МФЦ, суммы в рублях, сроки в рабочих днях).\n"
-            "3. analysis: Обоснуй право на услугу (нормативная база из текста, критерии заявителя).\n"
-            "4. steps: Четкий алгоритм: Куда -> С какими документами -> Время ожидания -> Ожидаемый результат.\n"
-            "5. final_regulation: Официальный, структурированный текст инструкции. Используй факты из 'extracted_entities'.\n\n"
-            "ОТВЕТЬ СТРОГО В JSON."
-            "ЭТАЛОН СТРУКТУРЫ:\n"
-            "{\n"
-            "  \"extracted_entities\": [\"СПб ГКУ 'ЦОСО'\", \"30 дней\"],\n"
-            "  \"analysis\": \"Услуга доступна ветеранам на основании...\",\n"
-            "  \"steps\": [\"Шаг 1: Собрать документы\", \"Шаг 2: Подать заявление\"],\n"
-            "  \"final_regulation\": \"Полный текст инструкции...\"\n"
-            "}"
+            "Ты — эксперт по социальным услугам и государственным инструкциям России.\n"
+            "Отвечай ИСКЛЮЧИТЕЛЬНО на основе предоставленного контекста. Не придумывай факты.\n"
+            "Строго следуй порядку мышления:\n"
+            "1. Извлеки ключевые факты → 2. Проведи анализ права → 3. Составь пошаговый алгоритм → 4. Сформируй финальную инструкцию.\n"
+            "Будь точным и лаконичным."
         )
 
         user_prompt = (
-            f"КОНТЕКСТ ДЛЯ АНАЛИЗА:\n{context_text}\n\n"
-            f"ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {query}\n\n"
-            "Сгенерируй JSON объект согласно схеме SocialInstructionSGR:"
+            f"КОНТЕКСТ:\n{context_text}\n\n"
+            f"ЗАПРОС ГРАЖДАНИНА: {query}\n\n"
+            "Сгенерируй ответ строго по схеме SocialInstructionSGR."
         )
 
         messages = [
@@ -54,21 +57,18 @@ class GenerationModule:
             {"role": "user", "content": user_prompt}
         ]
 
-        raw_output = self.llm.chat(
-            messages=messages,
-            response_format={"type": "json_object"}
-        )
-
-        clean_json = raw_output.strip().replace("```json", "").replace("```", "").strip()
-        clean_json = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_json)
-        
         try:
-            return SocialInstructionSGR.model_validate_json(clean_json)
-        except Exception:
-            data = json.loads(clean_json, strict=False)
-            return SocialInstructionSGR(
-                extracted_entities=data.get("extracted_entities", []) or data.get("facts", []),
-                analysis=data.get("analysis", "Ошибка разбора анализа"),
-                steps=data.get("steps", []) or ["Данные не извлечены"],
-                final_regulation=data.get("final_regulation") or data.get("reglament") or "Ошибка формирования итогового текста"
+            result = self.llm.chat(
+                messages=messages,
+                response_format=SocialInstructionSGR,
             )
+
+            if isinstance(result, dict):
+                return SocialInstructionSGR.model_validate(result)
+            elif isinstance(result, str):
+                return SocialInstructionSGR.model_validate_json(result)
+            else:
+                raise ValueError(f"Неожиданный тип результата от LLMClient: {type(result)}")
+
+        except Exception as e:
+            raise RuntimeError(f"Ошибка генерации инструкции: {str(e)}") from e

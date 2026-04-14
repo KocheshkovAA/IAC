@@ -1,54 +1,78 @@
-from pydantic import BaseModel, Field, AliasChoices
-import re
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional
+from LLM import LLMClient 
 
-class RAGEvaluationMetrics(BaseModel):
+class RAGEvaluationMetrics(BaseModel):    
+    model_config = ConfigDict(extra='forbid')
+
     reasoning: str = Field(
-        default="Обоснование не предоставлено моделью",
-        validation_alias=AliasChoices(
-            'reasoning', 'Reasoning', 'analysis', 'Analysis', 
-            'explanation', 'Explanation', 'обоснование', 'Обоснование'
-        )
-    )
-    faithfulness: int = Field(
-        validation_alias=AliasChoices('faithfulness', 'Faithfulness', 'верность', 'Верность'),
-        ge=1, le=5
-    )
-    relevance: int = Field(
-        validation_alias=AliasChoices('relevance', 'Relevance', 'релевантность', 'Релевантность'),
-        ge=1, le=5
-    )
-    completeness: int = Field(
-        validation_alias=AliasChoices('completeness', 'Completeness', 'полнота', 'Полнота'),
-        ge=1, le=5
+        ...,
+        description="Обоснование оценки одной строкой (без переносов). "
+                    "Объясни, почему поставлены именно такие баллы."
     )
     
+    faithfulness: int = Field(
+        ...,
+        description="Насколько ответ соответствует предоставленному контексту (1-5)",
+        ge=1,
+        le=5
+    )
+    
+    relevance: int = Field(
+        ...,
+        description="Насколько ответ релевантен и полезен для исходного запроса (1-5)",
+        ge=1,
+        le=5
+    )
+    
+    completeness: int = Field(
+        ...,
+        description="Насколько полно и всесторонне раскрыты факты и детали (1-5)",
+        ge=1,
+        le=5
+    )
+    
+
 class LLMJudge:
-    def __init__(self, client):
+    def __init__(self, client: LLMClient):
         self.client = client
 
-    def evaluate(self, query: str, context: str, response: str, ground_truth: str = None) -> RAGEvaluationMetrics:
+    def evaluate(
+        self, 
+        query: str, 
+        context: str, 
+        response: str, 
+        ground_truth: Optional[str] = None
+    ) -> RAGEvaluationMetrics:
+        
         system_prompt = (
-            "Ты — эксперт-аудитор. Оцени ответ RAG-системы по шкале от 1 до 5.\n"
-            "ПРАВИЛА:\n"
-            "1. reasoning: Пиши обоснование ОДНОЙ строкой, без переносов (Enter).\n"
-            "2. faithfulness: Насколько ответ соответствует контексту.\n"
-            "3. relevance: Насколько ответ полезен на запрос.\n"
-            "4. completeness: Насколько полно даны факты.\n"
-            "Верни СТРОГО JSON без вводных фраз."
+            "Ты — строгий эксперт-аудитор RAG-систем. "
+            "Оценивай ответ по четырём метрикам от 1 до 5.\n"
+            "Будь объективен, точен и лаконичен.\n"
+            "reasoning пиши одной строкой без переносов."
         )
 
-        user_prompt = f"ВОПРОС: {query}\nКОНТЕКСТ: {context}\nЭТАЛОН: {ground_truth or 'Не указан'}\nОТВЕТ: {response}"
-
-        raw_output = self.client.chat(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"}
+        user_prompt = (
+            f"ВОПРОС: {query}\n\n"
+            f"КОНТЕКСТ:\n{context}\n\n"
+            f"ЭТАЛОН (если есть): {ground_truth or 'Не предоставлен'}\n\n"
+            f"ОТВЕТ СИСТЕМЫ:\n{response}\n\n"
+            "Оцени строго по схеме RAGEvaluationMetrics."
         )
 
-        clean_json = raw_output.strip().replace("```json", "").replace("```", "").strip()
-        
-        clean_json = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean_json)
-        
-        return RAGEvaluationMetrics.model_validate_json(clean_json)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        result = self.client.chat(
+            messages=messages,
+            response_format=RAGEvaluationMetrics 
+        )
+
+        if isinstance(result, dict):
+            return RAGEvaluationMetrics.model_validate(result)
+        elif isinstance(result, str):
+            return RAGEvaluationMetrics.model_validate_json(result)
+        else:
+            raise ValueError(f"Неожиданный тип ответа от LLMClient: {type(result)}")

@@ -2,3 +2,9 @@
 
 *.pyc
 .env
+.ipynb_checkpoints/DB-checkpoint.py
+.ipynb_checkpoints/LLM-checkpoint.py
+
+.ipynb_checkpoints/README-checkpoint.md
+.ipynb_checkpoints/parser-checkpoint.py
+.ipynb_checkpoints/evaluation-checkpoint.py
